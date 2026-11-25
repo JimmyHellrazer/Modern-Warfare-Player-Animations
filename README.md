@@ -7,8 +7,9 @@ Current version: **v0.12.0** (Phase 7 movement anims + mantle, Phase 8 ground la
 The full design, change log and in-game test checklist are in `MPMDIDDY/PLAN.md`. Read its change log from the bottom up
 for the most recent work.
 
-## Read this first, rtx
+## Read PLS
 
+- RUNS LIKE SHIT RN
 - Best with MW Base. MW Base guns get the true MW holds, reloads, draws and hand IK; everything else is a fallback.
 - Most of the default GMod holdtypes look meh, and some are completely broken until we swap in the best-matching CoD
   anims for them.
