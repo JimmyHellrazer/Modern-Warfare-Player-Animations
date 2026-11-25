@@ -1,0 +1,6 @@
+{
+	"title": "Modern Player Motion",
+	"type": "tool",
+	"tags": ["realism", "fun"],
+	"ignore": ["*.md", "*.py", "*.txt"]
+}
