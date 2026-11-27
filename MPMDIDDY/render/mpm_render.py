@@ -28,7 +28,7 @@ import cod_to_breen as c2b  # noqa: E402
 import tif_mw_build as tmb  # noqa: E402
 
 ADDONS = r"K:/SteamLibrary/steamapps/common/GarrysMod/garrysmod/addons"
-CLIPS_LUA = ADDONS + "/modern_player_motion/lua/mpm/data/clips.lua"
+CLIPS_DIR = ADDONS + "/modern_player_motion/lua/mpm/data"
 BUILD = "K:/jimmyproject/mpm/build/clips/"
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "out")
 os.makedirs(OUT, exist_ok=True)
@@ -52,7 +52,8 @@ def guns():
     if _G is None:
         import lupa.luajit21 as lj
         L = lj.LuaRuntime()
-        L.execute("MPM={} " + open(CLIPS_LUA, encoding="utf-8").read())
+        names = sorted(f for f in os.listdir(CLIPS_DIR) if f.startswith("clips_p") and f.endswith(".lua")) or ["clips.lua"]
+        L.execute("MPM={} " + chr(10).join(open(os.path.join(CLIPS_DIR, n), encoding="utf-8").read() for n in names))
         _G = L
     return _G
 

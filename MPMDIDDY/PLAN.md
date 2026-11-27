@@ -787,6 +787,102 @@ Directions use the numpad: 8 fwd, 2 back, 4 left, 6 right, 7/9/1/3 diagonals.
   - NOT DONE (asked to leave): prone on your side / back (supine). Not in this pass: death anims, MWII weapon-down mantles,
     ledge hang (parked), far / climb mantle variants picked at runtime.
 
+- 2026-11-27 mpm_devtools `mpm_bench [seconds] [compare]` (`lua/autorun/mpm_bench.lua`): times every `MPM_*` hook, the
+  bone / IK callback (foot + hand IK, fingers) and the graph / gun functions on the client AND the server (host only),
+  per frame / tick: ms, calls, us per call, worst call, MPM's share of the frame / tick. `compare` runs again with
+  `mpm_enabled` / `mpm_anims` off and prints the fps difference. Saved to `data/mpm_bench/`. `mpm_bench_sv` = server only,
+  `mpm_bench_stop` ends early.
+
+- 2026-11-27 PERF (first `mpm_bench`, 1 player): server 0.19 ms / tick (1.2 %), fine. Client 4.8 ms / frame (39 % at 82 fps),
+  4.2 ms of it the bone / IK callback: it ran 4.2x per frame (one per render pass: view, shadow, reflections...) at
+  ~1 ms each, redoing foot IK, hand IK and fingers every time. Now solved once per frame and the finished bone matrices
+  re-applied for the other passes (key = frame number + the animated root bone, so a moved player still re-solves).
+  `mpm_ik_cache 0` = old behaviour. Worst single call 52 ms (1 % low 21 fps): likely a GC pause from the per-call
+  Matrix / Vector garbage; re-bench to see if the cache cut it.
+
+- 2026-11-27 `mpm_bench` GUN / HAND CHECK: every frame of the run, for every drawn MPM player with an MW Base gun, after
+  rendering: gun bone (WorldModelOffsets bone) vs where MPM placed it (u, deg), right hand vs the grip on the gun as
+  actually drawn (u, deg; only while right IK is full and the hand hasn't let go), right / left hand vs their IK targets.
+  Grouped by state (action kind or hold / ads, plus gait): n, mean, p95, max, % over 1 u / 3 deg; flags any state whose
+  p95 is over. Needs third person (or other players). cl_gun stores the right-hand target in `ply.MPM_RHTarget`.
+
+- 2026-11-27 ODEN / L86 placement (user: Oden "really far forward"): no grip tags, and the ejection-port estimate assumes the
+  port is ahead of the grip - on bullpups it's behind it. `asierra12` added to BULLPUPS; tagless bullpups now take MW's
+  fixed attach offset (MW_GT, median of 44 tagged MW19 guns, [11.2, 5.64, 9.4]); the L86 (`lima86`) had no calibration at
+  all and gets it too. Data only (clips.lua); models rebuilt anyway. Still estimated with the brass method: `gamma3`
+  (dx +4.2, dz -4.3 vs MW_GT: suspect) and the minigun.
+  - Bone callback is now `A.BoneCallback` (looked up each call), so Lua reloads reach it; the old closure kept the v0.12 IK
+    cache from running until a rejoin.
+  - Second bench (cache live): client 3.1 ms / frame (was 5.8), 94 fps (69), 1 % low 55 (28). Gun check: gun bone 0.5 u
+    but a constant 16.9 deg off MPM's placement, right hand 8.6 deg / 1.5 u off the drawn grip, and TWO IK solves per frame
+    with different root bones. The bench now also logs in-solve IK error per hand, solves per frame and the root
+    move / yaw between them, to find which bone build is the odd one.
+
+- 2026-11-27 bench round 3-4:
+  - "Bone is unwriteable" spam: MW Base's viewmodel events ask the player for an attachment -> PARTIAL bone build; the IK
+    cache wrote every bone back. Re-apply is pcall'd per bone, and a build where the right hand isn't writable is skipped.
+    (The engine still prints the warning now and then even when caught: harmless.)
+  - Extra bone builds at another body yaw (root turned up to 130 deg) left the gun placed for the wrong body. The gun's
+    wanted pose is now stored RELATIVE TO THE RIGHT HAND after the IK (`MPM_GW.lp / la`) and placed against the drawn hand.
+  - ODEN after the bullpup fix: gun on its placement 0.00 u / 0.04 deg, right hand on the grip 0.27 u / 0.04 deg (p95).
+  - M4: drawn gun a constant 16.9 deg (hold / ADS) / 8.8 deg (reload) off the placement -> suspect the tag_sling rest
+    compensation (the M4 world model turns tag_sling 90 deg in its idle). Open.
+  - BENCH BUG: its timing wrapper returned only 4 values, so A.GunWorld lost gp/ga and the RIGHT-HAND IK was off during
+    every bench run before this; fixed (varargs pass-through).
+
+- 2026-11-27 GUN ON THE RIGHT HAND AFTER ATTACHMENT CHANGES (user: randomized attachments / some foregrips parent the gun
+  to the right hand, e.g. it follows the bolt hand on sniper racks): MW Base's `BuildCustomizedGun` runs
+  `DeepObjectCopy(weapons.Get(class), self)`, which copies every class field back onto the gun INCLUDING RenderOverride -
+  MPM's wrapper (where the gun is placed) was replaced and the "wrapped" flag stopped it from ever wrapping again. Now the
+  wrapper is remembered (`wep.MPM_ROFn`) and re-applied whenever RenderOverride isn't it; the saved original offsets
+  and the measured tag_sling rest are dropped then (the rebuilt gun / attachments' Stats can change both).
+- 2026-11-27 DATA SPLIT FOR MULTIPLAYER (same problem TIF 0.38.70 hit: one 5.4 MB Lua file never reached MP clients): the
+  generated data was ONE 6.7 MB `clips.lua` (6.4 MB of it MPM.Guns; slima 680 KB, PKM 560 KB alone). Now
+  `lua/mpm/data/clips_pNNN.lua`, 71 parts of <= 110 KB (one statement per clip / per gun action; an action over the
+  limit splits by sub-key), loaded in name order by `mpm_load.lua` (falls back to an old `clips.lua`). Verified the parts
+  rebuild the exact same MPM.Clips / MPM.Guns tables. `mpm_build.py --split-only` re-splits existing data without a
+  rebuild. Harness: a size guard fails if any addon Lua file is over 200 KB. NEVER write one big Lua file again.
+
+- 2026-11-27 FOREGRIPS (user: grips off by the same offset every time; clip: Merc Foregrip on the M13, left hand hanging
+  off the gun): bench FOREGRIP CHECK measures MW's own left hand from the grip hold (`h_<g>_<st>_vert`) in the grip
+  mount's frame before the IK. M13 vertical grip: MW hand (-6.47, 0.84, -0.85) vs MPM's target (-1.5, 0, -3): 5.5 u off,
+  and the built hand rotation 29 deg off MW's. Default `mpm_gun_grip_vert` is now MW's value and vertical grips keep the
+  grip hold's own (MW) hand rotation. Angled / side grips not measured yet. Grip detection itself works
+  (`grip_gripvert_offset`, mount found on the barrel model).
+  - IK cache re-apply: compares only the bones the solve changed, against translation / forward cached at solve time,
+    and writes the ones that differ (partial builds - also the ones MW Base's world model draw triggers - keep stale =
+    cached values in bones they can't write, so those are never touched; the probe-bone idea missed those builds).
+
+- 2026-11-27 grips / RAAL / Oden (user: grip hand "not reading position right and lagging behind on turning"; RAAL "way
+  off and sideways"; Oden still too far forward):
+  - Grip mount was read from the barrel attachment model at moments it still held an older pose -> the mount (and the
+    hand) trailed on turns and the bench's MW-hand measurement swung 34 u. The mount (relative to the gun) is now taken
+    right after MW Base draws the gun (`wep.MPM_GripMount`, `A.GripMountOf`; cleared when the gun is rebuilt).
+    The -6.47 vertical grip value came from that bad data: back to "-2.05 2 -2" and the built hand rotation until a
+    clean measurement.
+  - Every frame had a 2nd bone build at the VIEW yaw (render angles were only set in PrePlayerDraw): they're now also
+    set in PreRender and in UpdateAnimation (`A.ApplyRenderAngles`).
+  - RAAL (`slima`): its hold puts the gun bone 111 deg rolled against its own reload / draw grip (median gun 17, M4 24,
+    minigun 43). Holds more than 60 deg off `jg` use `jg` (cl_gun holdOff).
+  - Oden / L86 (tagless bullpups): fore-aft from MW's left hand on the foregrip mount (L.x - (grip.x - 2.51) + 1.0 bias;
+    checked on tagged guns: bullpups within 0.4-1.8 u); side / height stay MW_GT. Oden gt.x 11.2 -> -1.0 (MW's right
+    hand sits 16 u ahead of its gun bone, in front of the mag), L86 11.2 -> 8.9. Data rebuilt, models unchanged.
+  - Bench check moved to PostRender (models drawn in the translucent pass were checked before they were built).
+
+- 2026-11-27 clean bench (M4 + Merc Foregrip, after the mount / render-angle fixes): 1 IK solve per frame, both hands' IK
+  error 0.00 u, mount steady (MW hand spread 3.7 u = hip vs ADS). MW's left hand on a vertical grip, mount frame:
+  (-5.44, -0.17, -2.04); the built hand rotation was 38.6 deg off MW's. Default `mpm_gun_grip_vert` = MW's value. Tried MW's
+  hand rotation for vertical grips: user says the built one (knuckles forward, index on top) looked upright and right,
+  only the position was off sideways -> built rotation kept. MW's measured position pairs with MW's rotation, so the
+  offset still needs tuning by eye with the built rotation (`mpm_gun_grip_vert`, live). Angled / side grips: not measured yet.
+
+- 2026-11-27 TRIGGER CALIBRATION (user: minigun sits too high, the red button is its trigger): across the 29 MW19 guns
+  with hand tags the right wrist sits at a near-constant spot from `j_trigger`: (-4.81, -1.24, -2.22), spread ~0.5 u.
+  Tagless non-pistol guns with a trigger bone now calibrate from it (gt = R - (trigger + that)); checked on the tagged
+  guns: median error 0.67 u, max 2.85 - better than the ejection-port and foregrip estimates. Minigun 16.44 / 7.07 /
+  13.09 -> 17.61 / 5.43 / 9.36 (3.7 u lower); Oden -1.02 -> 2.15 fore-aft. L86 (no trigger bone) keeps the foregrip
+  estimate, gamma3 (MWII rig) the old one; pistols unchanged (different grip angle). Data only.
+
 ## Test checklist (in game)
 
 1. `mpm_debug 1`. Walk/run/stop: does the ramp feel weighty but not laggy? Tune `mpm_accel_time`/`mpm_decel_time`.

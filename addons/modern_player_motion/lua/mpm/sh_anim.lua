@@ -328,6 +328,7 @@ hook.Add("UpdateAnimation", "MPM_Anim", function(ply, vel, maxSeqGroundSpeed)
     if A.UpdateFire then A.UpdateFire(ply) end
     if A.UpdateSlope then A.UpdateSlope(ply, out, seqFor) end
     if CLIENT then
+        if A.ApplyRenderAngles then A.ApplyRenderAngles(ply) end
         GAMEMODE:GrabEarAnimation(ply)
         GAMEMODE:MouthMoveAnimation(ply)
     end
@@ -336,13 +337,24 @@ end)
 
 if CLIENT then
     -- the body renders at its own yaw (turn-in-place); the aim layer twists the upper body to the view
+    function A.ApplyRenderAngles(ply)
+        local out = ply.MPM_AnimOut
+        if not out then return end
+        local ra = Angle(0, out.bodyYaw or out.yaw, 0)
+        if A.ProneTilt then ra = A.ProneTilt(ply, ra) end
+        ply:SetRenderAngles(ra)
+    end
+
+    hook.Add("PreRender", "MPM_AnimYaw", function()
+        for _, p in ipairs(player.GetAll()) do
+            if p.MPM_AnimOut then A.ApplyRenderAngles(p) end
+        end
+    end)
+
     hook.Add("PrePlayerDraw", "MPM_AnimYaw", function(ply)
         local out = ply.MPM_AnimOut
         if out then
-            -- body yaw: planted while standing still (turn-in-place), following the view when moving
-            local ra = Angle(0, out.bodyYaw or out.yaw, 0)
-            if A.ProneTilt then ra = A.ProneTilt(ply, ra) end
-            ply:SetRenderAngles(ra)
+            A.ApplyRenderAngles(ply)
             -- again right before the bones are built: the engine's own anim state may set them after our hook
             A.Neutralize(ply)
             A.SilenceForeign(ply)

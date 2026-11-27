@@ -141,6 +141,7 @@ local GUNS = {
     { "check", "Left hand onto the gun", "mpm_gun_ik" },
     { "check", "MW finger poses", "mpm_gun_fingers" },
     { "check", "Fingers never bend backwards", "mpm_finger_clamp" },
+    { "check", "Solve IK once per frame (faster)", "mpm_ik_cache" },
     { "slider", "Left hand: full IK within (u)", "mpm_gun_ik_reach", 0, 30, 1 },
     { "slider", "Left hand: fade over (u)", "mpm_gun_ik_fade", 0, 30, 1 },
     { "slider", "No hand IK beyond (u)", "mpm_gun_ik_dist", 200, 5000, 0 },

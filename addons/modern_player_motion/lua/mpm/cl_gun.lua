@@ -29,9 +29,8 @@ local CV = {
     rik    = CreateClientConVar("mpm_gun_rik", "1", true, false, "Right hand IK onto MW's real grip (the hold clips bend the wrist)"),
     adsal  = CreateClientConVar("mpm_gun_ads_align", "1", true, false, "ADS: line the sight (optic / hybrid alternate) up with the eye"),
     adsmax = CreateClientConVar("mpm_gun_ads_max", "4", true, false, "ADS alignment: most the gun moves (u)"),
-    -- grip hand spots in the mount's frame (fwd left up): vertical from TIF's fit (wrist 2 behind / 2 left of the grip
-    -- middle, palm on its left side), angled just behind it, side grips over the top of the handle
-    gripvert = CreateClientConVar("mpm_gun_grip_vert", "-2.05 2 -2", true, false, "Left wrist on a vertical grip (fwd left up)"),
+    cache  = CreateClientConVar("mpm_ik_cache", "1", true, false, "Solve the IK once per frame and reuse it for the other render passes"),
+    gripvert = CreateClientConVar("mpm_gun_grip_vert", "-5.44 -0.17 -2.04", true, false, "Left wrist on a vertical grip (fwd left up)"),
     gripang  = CreateClientConVar("mpm_gun_grip_ang", "-1.8 1.6 -1.6", true, false, "Left wrist on an angled grip (fwd left up)"),
     gripside = CreateClientConVar("mpm_gun_grip_side", "-1.5 3 0.8", true, false, "Left wrist on a side grip (fwd left up)"),
 }
@@ -81,7 +80,24 @@ local function slingRestOf(wep, boneName, g)
 end
 
 -- MW's gun bone under the right hand for the hold (stance, hip -> ADS)
+local function holdOff(g)
+    if g.MPM_HoldOff ~= nil then return g.MPM_HoldOff end
+    g.MPM_HoldOff = false
+    local h, j = g.gunhold_stand, g.jg
+    if h and j then
+        local a, b = Angle(h[4], h[5], h[6]), Angle(j[4], j[5], j[6])
+        local f = math.deg(math.acos(math.Clamp(a:Forward():Dot(b:Forward()), -1, 1)))
+        local u = math.deg(math.acos(math.Clamp(a:Up():Dot(b:Up()), -1, 1)))
+        g.MPM_HoldOff = math.max(f, u) > 60
+    end
+    return g.MPM_HoldOff
+end
+
 local function holdJ(ply, g)
+    if holdOff(g) then
+        local j = g.jg
+        return Vector(j[1], j[2], j[3]), Angle(j[4], j[5], j[6])
+    end
     local st = A.Stance(ply)
     local h = g["gunhold_" .. st] or g.gunhold_stand
     if not h then return nil end
@@ -274,12 +290,18 @@ local function applyPlacement(wep, ply)
     -- the gun as computed in the bone callback BEFORE the right hand was pulled onto its grip (the model hangs off the
     -- hand bone, so it's placed relative to the hand as it ends up)
     local gw = ply.MPM_GW
-    local wp, wa
-    if gw and gw.f == FrameNumber() then wp, wa = gw.wp, gw.wa else wp, wa = A.GunWorld(ply, wep, g) end
-    if not wp then return false end
     local hb = ply:LookupBone(BONE_RH)
     local hm = hb and ply:GetBoneMatrix(hb)
     if not hm then return false end
+    local wp, wa
+    if gw and gw.lp then
+        wp, wa = LocalToWorld(gw.lp, gw.la, hm:GetTranslation(), hm:GetAngles())
+    elseif gw and gw.f == FrameNumber() then
+        wp, wa = gw.wp, gw.wa
+    else
+        wp, wa = A.GunWorld(ply, wep, g)
+    end
+    if not wp then return false end
     local fp, fa = hm:GetTranslation(), hm:GetAngles()
     if rest.ppos then fp, fa = LocalToWorld(rest.ppos, rest.pang, fp, fa) end -- the placement bone's real parent
     local lp, la = WorldToLocal(wp, wa, fp, fa)
@@ -314,7 +336,10 @@ end
 
 -- MW Base draws the world model in its RenderOverride: set the offsets right before, from this frame's bones
 local function wrapRender(wep)
-    if wep.MPM_RO or not wep.RenderOverride then return end
+    if not wep.RenderOverride or wep.RenderOverride == wep.MPM_ROFn then return end
+    if wep.MPM_ROFn then
+        wep.MPM_OrigWMO, wep.MPM_RestM, wep.MPM_GripMount = nil, nil, nil
+    end
     local orig = wep.RenderOverride
     wep.MPM_RO = true
     wep.RenderOverride = function(self, flags)
@@ -337,6 +362,7 @@ local function wrapRender(wep)
             end
         end
         local r = orig(self, flags)
+        if A.GripMountOf then self.MPM_GripMount = A.GripMountOf(self) end
         -- the rest under the hand as this draw posed it: (parent^-1 * bone) with this draw's manipulation taken off
         local base = self.MPM_OrigWMO or self.WorldModelOffsets
         local b = base and self:LookupBone(base.Bone or "tag_sling")
@@ -358,6 +384,7 @@ local function wrapRender(wep)
         end
         return r
     end
+    wep.MPM_ROFn = wep.RenderOverride
 end
 
 hook.Add("PrePlayerDraw", "MPM_GunPlace", function(ply)
@@ -431,6 +458,12 @@ local function gripMount(wep, sb)
     return nil
 end
 
+function A.GripMountOf(wep)
+    local base = wep.MPM_OrigWMO or wep.WorldModelOffsets
+    local sb = base and wep:LookupBone(base.Bone or "tag_sling")
+    return sb and gripMount(wep, sb) or nil
+end
+
 -- hand rotations on grips (ValveBiped left hand: +x wrist -> knuckles, index side +z, palm toward -y), from the gun axes
 local function handFrame(X, Z)
     X = X - Z * X:Dot(Z)
@@ -473,7 +506,7 @@ local function leftTarget(ply, wep, g, wp, wa)
         -- MW puts this gun's left hand where MW Base's tag isn't (the AK's 3P magwell hold): MW's own clips' spot
         return LocalToWorld(Vector(g.lhg[1], g.lhg[2], g.lhg[3]), angle_zero, wp, wa), mwRot, nil
     end
-    local gm = GRIP_CV[v or ""] and gripMount(wep, sb)
+    local gm = GRIP_CV[v or ""] and (wep.MPM_GripMount or gripMount(wep, sb))
     local gunM = Matrix()
     gunM:SetTranslation(wp)
     gunM:SetAngles(wa)
@@ -481,7 +514,7 @@ local function leftTarget(ply, wep, g, wp, wa)
         local off = cvVec(GRIP_CV[v])
         local mw = gunM * gm
         local p = LocalToWorld(off, angle_zero, mw:GetTranslation(), mw:GetAngles())
-        return p, gripHandRot(v, wa) or mwRot, v
+        return p, gripHandRot(v, wa) or mwRot, v, mw
     end
     if v and v ~= "ang" and v ~= "gl" then mwRot = nil end -- (grips above build their own hand)
     local le = tagInGun(wep, sb, wep, "tag_ik_loc_le")
@@ -691,12 +724,27 @@ local function solve(ply)
         -- the grip is physical: hand = model * T(-gt) * J^-1 with the ACTION rig's calibration (J came from its clips)
         local jp, ja = LocalToWorld(Vector(-g.gt[1], -g.gt[2], -g.gt[3]), angle_zero, wp, wa)
         local hp, ha = LocalToWorld(ip, ia, jp, ja)
+        ply.MPM_RHTarget = hp
         local rids = boneIds(ply, "MPM_RIKBones", R_ARM)
         local mrh = rids[3] and ply:GetBoneMatrix(rids[3])
+        if mrh then ply.MPM_RHDist = { d = mrh:GetTranslation():Distance(hp), f = FrameNumber() } end
         if mrh and mrh:GetTranslation():Distance(hp) < 14 then
             local k = ply.MPM_RIKW
             solveArm(ply, mrh:GetTranslation() + (hp - mrh:GetTranslation()) * k, rotOf(ha), k, true)
+            if k > 0.9 then
+                local m2 = ply:GetBoneMatrix(rids[3])
+                if m2 then
+                    local f = math.deg(math.acos(math.Clamp(m2:GetForward():Dot(ha:Forward()), -1, 1)))
+                    local u = math.deg(math.acos(math.Clamp(m2:GetUp():Dot(ha:Up()), -1, 1)))
+                    ply.MPM_RHErr = { d = m2:GetTranslation():Distance(hp), a = math.max(f, u), f = FrameNumber() }
+                end
+            end
         end
+    end
+    if wp and ply.MPM_GW then
+        local rb = boneIds(ply, "MPM_RIKBones", R_ARM)[3]
+        local mh2 = rb and ply:GetBoneMatrix(rb)
+        if mh2 then ply.MPM_GW.lp, ply.MPM_GW.la = WorldToLocal(wp, wa, mh2:GetTranslation(), mh2:GetAngles()) end
     end
     -- right hand: MW's grip fingers while the gun is in it
     local rfw = CV.fing:GetBool() and wp and (1 - (bodyW or 0)) * (1 - addW) or 0
@@ -707,9 +755,9 @@ local function solve(ply)
     local w = A.LeftHandWeight and A.LeftHandWeight(ply, actW) or (1 - (actW or 0))
     if ply.MPM_Gait == "tac" then w = 0 end -- tac sprint: the gun up one-handed
     w = w * (1 - addW) -- bolt / pump cycle: the gun hangs off the left hand (GunWorld), nothing to pull
-    local T, rot, kind
+    local T, rot, kind, mountM
     if wp then
-        T, rot, kind = leftTarget(ply, wep, g, wp, wa)
+        T, rot, kind, mountM = leftTarget(ply, wep, g, wp, wa)
     end
     if not T then
         -- no grip tag (MW Base's pistols): the left hand where MW's hold has it relative to the right hand
@@ -728,12 +776,32 @@ local function solve(ply)
     local ids = boneIds(ply, "MPM_IKBones", L_ARM)
     local mh = ids[3] and ply:GetBoneMatrix(ids[3])
     if not mh then return end
+    if mountM then
+        local lp, la = WorldToLocal(mh:GetTranslation(), mh:GetAngles(), mountM:GetTranslation(), mountM:GetAngles())
+        local tl = WorldToLocal(T, angle_zero, mountM:GetTranslation(), mountM:GetAngles())
+        local rd
+        if rot then
+            local hr = Matrix(mh)
+            hr:SetTranslation(vector_origin)
+            rd = math.deg(math.acos(math.Clamp(hr:GetForward():Dot(rot:GetForward()), -1, 1)))
+        end
+        ply.MPM_GripCal = { kind = kind, p = lp, a = la, t = tl, rd = rd, f = FrameNumber() }
+    end
     local dist = mh:GetTranslation():Distance(T)
+    local w0 = w
     w = w * (1 - math.Clamp((dist - CV.ikfull:GetFloat()) / math.max(CV.ikfade:GetFloat(), 0.1), 0, 1))
+    local gv = A.GripVariant and A.GripVariant(wep.MPM_Grip) or g.integ
+    ply.MPM_LHDist = { d = dist, w0 = w0, w = w, kind = (kind or (g.lhg and "lhg") or "tag/mw")
+        .. (gv and (mountM and " (grip " .. gv .. ", mount found)" or " (grip " .. gv .. ", NO MOUNT)") or ""),
+        grip = wep.MPM_Grip, f = FrameNumber() }
     ply.MPM_IKW = math.Approach(ply.MPM_IKW or w, w, dt * 6)
     w = ply.MPM_IKW
     if w <= 0.01 then return end
     solveArm(ply, mh:GetTranslation() + (T - mh:GetTranslation()) * w, rot, w)
+    if w > 0.9 then
+        local m2 = ply:GetBoneMatrix(ids[3])
+        if m2 then ply.MPM_LHErr = { d = m2:GetTranslation():Distance(T), f = FrameNumber() } end
+    end
     if CV.fing:GetBool() then
         applyFingers(ply, "MPM_LFIds", L_F, (kind and g["fl_" .. kind]) or (kind == "vertpro" and g.fl_vert) or g.fl, w)
     end
@@ -784,16 +852,64 @@ local function clampFingers(ply)
     end
 end
 
+local function sameM(a, b)
+    return a and b and a:GetTranslation():DistToSqr(b:GetTranslation()) < 1e-6
+        and a:GetForward():DistToSqr(b:GetForward()) < 1e-8 and a:GetUp():DistToSqr(b:GetUp()) < 1e-8
+end
+
+function A.BoneCallback(e, n)
+    if A.TraceHook then A.TraceHook(e, "anim") end
+    local frame = FrameNumber()
+    local root = e:GetBoneMatrix(0)
+    local key = root and (root:GetTranslation() + root:GetForward() * 7 + root:GetUp() * 13)
+    local c = e.MPM_BoneCache
+    if CV.cache:GetBool() and c and key and c.frame == frame and c.n == n and c.key:DistToSqr(key) < 1e-4 then
+        local skipped = 0
+        for _, i in ipairs(c.changed) do
+            local cur = e:GetBoneMatrix(i)
+            if cur and (cur:GetTranslation():DistToSqr(c.t[i]) > 1e-6 or cur:GetForward():DistToSqr(c.f[i]) > 1e-8) then
+                e:SetBoneMatrix(i, c[i])
+            else
+                skipped = skipped + 1
+            end
+        end
+        if skipped == #c.changed and skipped > 0 then e.MPM_PartialN = (e.MPM_PartialN or 0) + 1 end
+    else
+        if e.MPM_SolveF == frame then
+            e.MPM_SolveN = e.MPM_SolveN + 1
+            if key and e.MPM_SolveK then
+                e.MPM_SolveSpread = math.max(e.MPM_SolveSpread, key:Distance(e.MPM_SolveK))
+                e.MPM_SolveYaw = math.max(e.MPM_SolveYaw, math.abs(math.AngleDifference(root:GetAngles().y, e.MPM_SolveY)))
+            end
+        else
+            e.MPM_SolveF, e.MPM_SolveN, e.MPM_SolveSpread, e.MPM_SolveYaw = frame, 1, 0, 0
+            e.MPM_SolveK, e.MPM_SolveY = key, root and root:GetAngles().y or 0
+        end
+        local pre = key and CV.cache:GetBool() and {} or nil
+        if pre then for i = 0, n - 1 do pre[i] = e:GetBoneMatrix(i) end end
+        if A.GroundSolve then A.GroundSolve(e) end
+        solve(e)
+        if e.MPM_AnimOut then clampFingers(e) end
+        if pre then
+            c = { frame = frame, n = n, key = key, changed = {}, t = {}, f = {} }
+            for i = 0, n - 1 do
+                local m = e:GetBoneMatrix(i)
+                if m and not sameM(m, pre[i]) then
+                    c[i], c.t[i], c.f[i] = m, m:GetTranslation(), m:GetForward()
+                    c.changed[#c.changed + 1] = i
+                end
+            end
+            e.MPM_BoneCache = c
+        end
+    end
+    if A.TraceHook then A.TraceHook(e, "final") end
+end
+
 local function addCb(ent)
-    if IsValid(ent) and ent:IsPlayer() and not ent.MPM_IKCb then
-        ent.MPM_IKCb = ent:AddCallback("BuildBonePositions", function(e)
-            -- dev tools (mpm_devtools finger tracker): the bones as the animation gave them, and after MPM's changes
-            if A.TraceHook then A.TraceHook(e, "anim") end
-            if A.GroundSolve then A.GroundSolve(e) end
-            solve(e)
-            if e.MPM_AnimOut then clampFingers(e) end
-            if A.TraceHook then A.TraceHook(e, "final") end
-        end)
+    if IsValid(ent) and ent:IsPlayer() and not ent.MPM_IKCb2 then
+        if ent.MPM_IKCb then ent:RemoveCallback("BuildBonePositions", ent.MPM_IKCb) end
+        ent.MPM_IKCb2 = true
+        ent.MPM_IKCb = ent:AddCallback("BuildBonePositions", function(e, n) A.BoneCallback(e, n) end)
     end
 end
 hook.Add("NetworkEntityCreated", "MPM_GunIK", addCb)

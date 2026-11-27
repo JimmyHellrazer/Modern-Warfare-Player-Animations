@@ -281,11 +281,14 @@ T[#T + 1] = { "grips: side grips recognised, Origin 12 has its own side-grip han
         and A.GripVariant("grip_ang_offset") == "ang" and o and o.fl_side ~= nil, tostring(o and o.fl_side ~= nil)
 end }
 
-T[#T + 1] = { "fists: held in MWII's fists idle (own hold + fingers); slima / bullpups keep the old placement", function()
+T[#T + 1] = { "fists: own hold + fingers; tagless bullpups (Oden, L86): MW's side / height, fore-aft from the foregrip", function()
     local f = MPM.Guns.fists
     local G = MPM.Guns
-    return f and f.hold_stand ~= nil and f.fr ~= nil and G.slima and G.slima.gt ~= nil and G.lima86 and not G.lima86.gt,
-        tostring(f and f.hold_stand)
+    local function est(g) return g and g.gt and g.gtest and math.abs(g.gt[2] - 5.64) < 0.5 and math.abs(g.gt[3] - 9.4) < 0.5 end
+    local oden = G.asierra12 and G.asierra12.gt
+    return f and f.hold_stand ~= nil and f.fr ~= nil and G.slima and G.slima.gt ~= nil and est(G.lima86) and est(G.asierra12)
+        and oden and oden[1] < 4, ("oden gt.x %s, l86 gt.x %s"):format(tostring(oden and oden[1]),
+        tostring(G.lima86 and G.lima86.gt and G.lima86.gt[1]))
 end }
 
 -- v0.10.1 ---------------------------------------------------------------------------------------------------------------

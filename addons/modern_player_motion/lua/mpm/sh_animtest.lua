@@ -33,7 +33,7 @@ end
 
 concommand.Add("mpm_check", function()
     local total = table.Count(MPM.Clips or {})
-    if total == 0 then print("[MPM] no clip data (lua/mpm/data/clips.lua missing)") return end
+    if total == 0 then print("[MPM] no clip data (lua/mpm/data/clips_p*.lua missing)") return end
     local models = { LocalPlayer():GetModel(), "models/player/kleiner.mdl", "models/player/group01/female_02.mdl",
                      "models/player/combine_soldier.mdl" }
     for _, mdl in ipairs(models) do

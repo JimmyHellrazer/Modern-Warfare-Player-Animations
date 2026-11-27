@@ -21,9 +21,13 @@ for f in ["sh_config.lua", "sh_state.lua", "sh_input.lua", "sh_move.lua", "sh_ma
     lua.execute(lua_file(os.path.join(addon, "lua", "mpm", f)))
 
 tests = lua.execute(lua_file(os.path.join(here, "tests.lua")))
-anim_data = os.path.join(addon, "lua", "mpm", "data", "clips.lua")
-if os.path.exists(anim_data):
-    lua.execute(lua_file(anim_data))
+data_dir = os.path.join(addon, "lua", "mpm", "data")
+parts = sorted(f for f in os.listdir(data_dir) if f.startswith("clips_p") and f.endswith(".lua")) if os.path.isdir(data_dir) else []
+if not parts and os.path.exists(os.path.join(data_dir, "clips.lua")):
+    parts = ["clips.lua"]
+if parts:
+    for f in parts:
+        lua.execute(lua_file(os.path.join(data_dir, f)))
     lua.execute(lua_file(os.path.join(addon, "lua", "mpm", "sh_anim.lua")))
     lua.execute(lua_file(os.path.join(addon, "lua", "mpm", "sh_anim_trans.lua")))
     lua.execute(lua_file(os.path.join(addon, "lua", "mpm", "sh_anim_guns.lua")))
@@ -32,6 +36,15 @@ if os.path.exists(anim_data):
         extra = lua.execute(lua_file(os.path.join(here, tf)))
         for i in range(1, len(extra) + 1):
             tests[len(tests) + 1] = extra[i]
+LUA_LIMIT = 200 * 1024
+big = []
+for root, _, files in os.walk(os.path.join(addon, "lua")):
+    for f in files:
+        if f.endswith(".lua") and os.path.getsize(os.path.join(root, f)) > LUA_LIMIT:
+            big.append(f"{f} {os.path.getsize(os.path.join(root, f)) // 1024} KB")
+size_ok = not big
+print(("PASS" if size_ok else "FAIL"), "every addon Lua file <= 200 KB (big files never reach MP clients)", "|",
+      ", ".join(big) or f"{sum(1 for _ in os.walk(addon))} dirs checked")
 passed = 0
 total = len(tests)
 for i in range(1, total + 1):
@@ -42,4 +55,4 @@ for i in range(1, total + 1):
         ok, detail = False, "ERROR " + str(e)
     passed += bool(ok)
     print(("PASS" if ok else "FAIL"), name, "|", detail)
-print(f"{passed}/{total}")
+print(f"{passed + size_ok}/{total + 1}")
